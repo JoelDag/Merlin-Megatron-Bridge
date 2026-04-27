@@ -151,7 +151,8 @@ def initialize_megatron(
                 ),
                 flush=True,
             )
-        torch.distributed.barrier()
+        if get_world_size_safe() > 1:
+            torch.distributed.barrier()
 
     return result
 
@@ -308,10 +309,11 @@ def set_jit_fusion_options(
         torch._C._jit_override_can_fuse_on_cpu(True)
         torch._C._jit_override_can_fuse_on_gpu(True)
 
-    _warmup_jit_function(
-        model_config.transformer if isinstance(model_config, (GPTModelConfig, MambaModelConfig)) else model_config,
-        micro_batch_size,
-    )
+    if os.environ.get("BRIDGE_SKIP_JIT_WARMUP") != "1":
+        _warmup_jit_function(
+            model_config.transformer if isinstance(model_config, (GPTModelConfig, MambaModelConfig)) else model_config,
+            micro_batch_size,
+        )
 
 
 def destroy_global_state() -> None:
@@ -747,7 +749,9 @@ def _initialize_distributed(
         if use_inprocess_restart:
             force_nccl_backend_init(torch.cuda.current_device())
 
-        if dist_config.external_gpu_device_mapping:
+        if get_world_size_safe() == 1:
+            pass
+        elif dist_config.external_gpu_device_mapping:
             torch.distributed.barrier(device_ids=[0])
         else:
             torch.distributed.barrier(device_ids=[get_local_rank_preinit()])

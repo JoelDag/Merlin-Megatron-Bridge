@@ -56,7 +56,7 @@ from megatron.bridge.training.tensor_inspect import (
 from megatron.bridge.training.tokenizers.tokenizer import build_tokenizer
 from megatron.bridge.training.utils.log_utils import append_to_progress_log, barrier_and_log, setup_logging
 from megatron.bridge.training.utils.train_utils import start_memory_history_recording
-from megatron.bridge.utils.common_utils import get_rank_safe, print_rank_0
+from megatron.bridge.utils.common_utils import get_rank_safe, get_world_size_safe, print_rank_0
 
 
 class SetupOutput(NamedTuple):
@@ -173,9 +173,10 @@ def setup(
     # Adjust the startup time so it reflects the largest value.
     # This will be closer to what scheduler will see (outside of
     # image ... launches.
-    start_time_tensor = torch.tensor([state.start_time], dtype=torch.double, device="cuda")
-    torch.distributed.all_reduce(start_time_tensor, op=torch.distributed.ReduceOp.MIN)
-    state.start_time = start_time_tensor.item()
+    if torch.distributed.get_world_size() > 1:
+        start_time_tensor = torch.tensor([state.start_time], dtype=torch.double, device="cuda")
+        torch.distributed.all_reduce(start_time_tensor, op=torch.distributed.ReduceOp.MIN)
+        state.start_time = start_time_tensor.item()
 
     print_rank_0("time to initialize megatron (seconds): {:.3f}".format(time.time() - state.start_time))
     barrier_and_log("after megatron is initialized")
@@ -184,7 +185,9 @@ def setup(
     checkpoint_manager = create_checkpoint_manager(cfg.checkpoint)
 
     # Tokenizer
-    timers("tokenizer-setup", log_level=0).start(barrier=True)
+    timer_barrier = get_world_size_safe() > 1
+
+    timers("tokenizer-setup", log_level=0).start(barrier=timer_barrier)
     tokenizer = build_tokenizer(cfg.tokenizer)
     # Handle model vocab_size configuration with proper validation
     cfg.model.vocab_size, cfg.model.should_pad_vocab = _validate_and_set_vocab_size(
@@ -200,7 +203,7 @@ def setup(
     initialize_tensor_inspect_pre_model_initialization(cfg.tensor_inspect)
 
     # Model, optimizer, and learning rate.
-    timers("model-and-optimizer-setup", log_level=0).start(barrier=True)
+    timers("model-and-optimizer-setup", log_level=0).start(barrier=timer_barrier)
 
     # Register PEFT pre-wrap hook if PEFT is configured
     if cfg.peft is not None:
@@ -279,7 +282,7 @@ def setup(
         )
 
     if should_load_checkpoint:
-        timers("load-checkpoint", log_level=0).start(barrier=True)
+        timers("load-checkpoint", log_level=0).start(barrier=timer_barrier)
         checkpoint_manager.load(CheckpointLoadContext(
             state=state,
             model=model,
@@ -287,7 +290,7 @@ def setup(
             opt_param_scheduler=scheduler,
             skip_load_to_model_and_opt=cfg.dist.use_torch_fsdp2,
         ))
-        timers("load-checkpoint").stop(barrier=True)
+        timers("load-checkpoint").stop(barrier=timer_barrier)
         timers.log(["load-checkpoint"])
 
     # Finalize NVIDIA DLFw Inspect after model is built (attach loggers, module names, parallelism groups)
@@ -323,7 +326,7 @@ def setup(
         callback_manager.fire("on_data_init_start", context)
 
     # Data stuff.
-    timers("train/valid/test-data-iterators-setup", log_level=0).start(barrier=True)
+    timers("train/valid/test-data-iterators-setup", log_level=0).start(barrier=timer_barrier)
     if "tokenizer" in inspect.signature(train_valid_test_datasets_provider).parameters:
         train_valid_test_datasets_provider = partial(train_valid_test_datasets_provider, tokenizer=tokenizer)
     if "pg_collection" in inspect.signature(train_valid_test_datasets_provider).parameters:
@@ -346,7 +349,7 @@ def setup(
 
     # Print setup timing.
     print_rank_0("done with setup ...")
-    timers.log(["model-and-optimizer-setup", "train/valid/test-data-iterators-setup"], barrier=True)
+    timers.log(["model-and-optimizer-setup", "train/valid/test-data-iterators-setup"], barrier=timer_barrier)
 
     return SetupOutput(
         state,
@@ -463,7 +466,7 @@ def _create_peft_pre_wrap_hook(
 
         # Explicitly set finetune to avoid loading optimizer and RNG states
         cfg.checkpoint.finetune = True
-        state.timers("load-pretrained-checkpoint", log_level=0).start(barrier=True)
+        state.timers("load-pretrained-checkpoint", log_level=0).start(barrier=get_world_size_safe() > 1)
         print_rank_0(f"Loading base model weights from: {cfg.checkpoint.pretrained_checkpoint}")
 
         # Directly call load_checkpoint_from path in order to avoid
@@ -479,7 +482,7 @@ def _create_peft_pre_wrap_hook(
             skip_load_to_model_and_opt=False,
             ignore_ckpt_step=True,  # ckpt_step applies only to adapter checkpoints, not pretrained base model
         )
-        state.timers("load-pretrained-checkpoint").stop(barrier=True)
+        state.timers("load-pretrained-checkpoint").stop(barrier=get_world_size_safe() > 1)
         state.timers.log(["load-pretrained-checkpoint"])
 
         # Apply PEFT transformation

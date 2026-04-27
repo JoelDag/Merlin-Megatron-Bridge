@@ -777,7 +777,7 @@ def training_log(
         MTPLossLoggingHelper.track_mtp_metrics(mtp_loss_scale, iteration, writer, wandb_writer, total_loss_dict)
 
     if iteration % logger_config.log_interval == 0:
-        elapsed_time = timers("interval-time").elapsed(barrier=True)
+        elapsed_time = timers("interval-time").elapsed(barrier=get_world_size_safe() > 1)
         elapsed_time_per_iteration = elapsed_time / total_iterations
 
         # Calculate GPU utilization

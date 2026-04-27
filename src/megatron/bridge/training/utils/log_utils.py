@@ -132,7 +132,7 @@ def append_to_progress_log(save_dir: str, string: str, barrier: bool = True) -> 
     if save_dir is None:
         return
     progress_log_filename = os.path.join(save_dir, "progress.txt")
-    if barrier and torch.distributed.is_initialized():
+    if barrier and torch.distributed.is_initialized() and get_world_size_safe() > 1:
         torch.distributed.barrier()
     if get_rank_safe() == 0:
         os.makedirs(os.path.dirname(progress_log_filename), exist_ok=True)
@@ -150,7 +150,7 @@ def barrier_and_log(string: str) -> None:
     Args:
         string: The message string to log.
     """
-    if torch.distributed.is_initialized():
+    if torch.distributed.is_initialized() and get_world_size_safe() > 1:
         torch.distributed.barrier()
     time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print_rank_0(f"[{string}] datetime: {time_str} ")

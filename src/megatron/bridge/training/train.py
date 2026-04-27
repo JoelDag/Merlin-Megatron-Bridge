@@ -186,7 +186,9 @@ def train(
         energy_monitor.setup()
         energy_monitor.resume()
 
-    timers("interval-time", log_level=0).start(barrier=True)
+    timer_barrier = get_world_size_safe() > 1
+
+    timers("interval-time", log_level=0).start(barrier=timer_barrier)
     report_memory_flag = True
     pre_hook_enabled = False
     should_exit = False
@@ -249,7 +251,8 @@ def train(
         assert check_param_hashes_across_dp_replicas(model, cross_check=True), (
             "Parameter hashes not matching across DP replicas"
         )
-        torch.distributed.barrier()
+        if get_world_size_safe() > 1:
+            torch.distributed.barrier()
         print_rank_0(f">>> Weight hashes match after {global_state.train_state.step} iterations...")
 
     # Capture CUDA Graphs.
@@ -600,7 +603,7 @@ def train(
                 # Collect all objects.
                 gc.collect()
             prefix = f"iteration {global_state.train_state.step}"
-            timers("eval-time", log_level=0).start(barrier=True)
+            timers("eval-time", log_level=0).start(barrier=timer_barrier)
             evaluate_and_print_results(
                 global_state,
                 prefix,
@@ -622,7 +625,7 @@ def train(
             if should_toggle_forward_pre_hook:
                 enable_forward_pre_hook(model)
                 pre_hook_enabled = True
-            timers("interval-time", log_level=0).start(barrier=True)
+            timers("interval-time", log_level=0).start(barrier=timer_barrier)
             if energy_monitor is not None:
                 energy_monitor.resume()
 
@@ -1010,7 +1013,8 @@ def maybe_check_weight_hash_across_dp_replicas(
     assert check_param_hashes_across_dp_replicas(model, cross_check=True), (
         "Parameter hashes not matching across DP replicas"
     )
-    torch.distributed.barrier()
+    if get_world_size_safe() > 1:
+        torch.distributed.barrier()
     print_rank_0(f">>> Weight hashes match after {iteration} iterations...")
     if should_toggle_forward_pre_hook:
         enable_forward_pre_hook(model)
@@ -1224,7 +1228,8 @@ def save_checkpoint_and_time(
 
     # Extra barrier is added to make sure all ranks report the max time.
     timer_key = "save-checkpoint-non-persistent" if non_persistent_ckpt else "save-checkpoint"
-    timers(timer_key, log_level=0).start(barrier=True)
+    timer_barrier = get_world_size_safe() > 1
+    timers(timer_key, log_level=0).start(barrier=timer_barrier)
 
     should_force_param_sync = should_disable_forward_pre_hook(
         state.cfg.ddp.use_megatron_fsdp,
@@ -1261,7 +1266,7 @@ def save_checkpoint_and_time(
         # dequantized bf16 tensors that were temporarily created during fp8
         # model checkpoint saving.
         gc.collect()
-    timers(timer_key).stop(barrier=True)
+    timers(timer_key).stop(barrier=timer_barrier)
     timers.log([timer_key])
 
     if state.cfg.logger.log_progress and not non_persistent_ckpt:
@@ -1270,7 +1275,7 @@ def save_checkpoint_and_time(
     # Recover timing
     if energy_monitor is not None:
         energy_monitor.resume()
-    timers("interval-time", log_level=0).start(barrier=True)
+    timers("interval-time", log_level=0).start(barrier=timer_barrier)
 
 
 def checkpoint_and_decide_exit(

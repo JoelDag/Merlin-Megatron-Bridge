@@ -18,7 +18,6 @@ from pathlib import Path
 import torch.nn.functional as F
 
 from megatron.bridge.data.datasets.packing_utils import calculate_avg_seqlen
-from megatron.bridge.peft.lora import LoRA
 from megatron.bridge.training.config import ConfigContainer
 from megatron.bridge.utils.vocab_utils import calculate_padded_vocab_size
 
@@ -29,7 +28,7 @@ _lora_seq_stats_cache: dict = {}
 def num_floating_point_operations(cfg: ConfigContainer, batch_size: int = 1):
     """Return the number of floating point operations"""
     peft = getattr(cfg, "peft", None)
-    is_lora = isinstance(peft, LoRA)
+    is_lora = peft is not None and peft.__class__.__name__ == "LoRA"
     # If the model provider has a custom TFLOPS calculation method, use it (non-LoRA only).
     if not is_lora and hasattr(cfg.model, "_get_num_floating_point_operations"):
         return cfg.model._get_num_floating_point_operations(batch_size)

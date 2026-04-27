@@ -24,7 +24,7 @@ from megatron.bridge.training.setup import setup
 from megatron.bridge.training.state import GlobalState
 from megatron.bridge.training.train import _finish_train, train
 from megatron.bridge.training.utils.log_utils import barrier_and_log
-from megatron.bridge.utils.common_utils import print_rank_0
+from megatron.bridge.utils.common_utils import get_world_size_safe, print_rank_0
 from megatron.bridge.utils.decorators import experimental_fn
 
 
@@ -198,6 +198,7 @@ def _maybe_destroy_process_group(should_destroy: bool) -> None:
     Args:
         should_destroy: Whether the process group should be destroyed
     """
-    if should_destroy and dist.is_initialized():
+    if should_destroy and dist.is_initialized() and get_world_size_safe() > 1:
         dist.barrier()
+    if should_destroy and dist.is_initialized():
         dist.destroy_process_group()

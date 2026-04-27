@@ -108,34 +108,15 @@ import inspect
 from typing import Callable
 
 import megatron.bridge.recipes as recipes
-
-# Diffusion forward steps: use class instances so they can be passed as forward_step_func
-from megatron.bridge.diffusion.models.flux.flux_step import FluxForwardStep
-from megatron.bridge.diffusion.models.wan.wan_step import WanForwardStep
-from megatron.bridge.models.qwen_vl.qwen3_vl_step import forward_step as qwen3_vl_forward_step
-from megatron.bridge.recipes.utils.dataset_utils import (
-    DATASET_TYPES,
-    apply_dataset_override,
-    infer_mode_from_dataset,
-)
-from megatron.bridge.training.audio_lm_step import forward_step as audio_lm_forward_step
-from megatron.bridge.training.config import ConfigContainer
+from megatron.bridge.training.config import ConfigContainer, GPTDatasetConfig, MockGPTDatasetConfig
 from megatron.bridge.training.finetune import finetune
 from megatron.bridge.training.gpt_step import forward_step as gpt_forward_step
-from megatron.bridge.training.llava_step import forward_step as llava_forward_step
 from megatron.bridge.training.pretrain import pretrain
 from megatron.bridge.training.utils.omegaconf_utils import process_config_with_overrides
-from megatron.bridge.training.vlm_step import forward_step as vlm_forward_step
 
 
 STEP_FUNCTIONS: dict[str, Callable] = {
-    "audio_lm_step": audio_lm_forward_step,
     "gpt_step": gpt_forward_step,
-    "vlm_step": vlm_forward_step,
-    "qwen3_vl_step": qwen3_vl_forward_step,
-    "llava_step": llava_forward_step,
-    "flux_step": FluxForwardStep,
-    "wan_step": WanForwardStep,
 }
 
 TRAIN_FUNCTIONS = {
@@ -149,6 +130,77 @@ ERR_INFER_MODE_FAILED = (
     "Pass --dataset to specify the dataset type, or include 'pretrain' or 'finetune' "
     "(or 'sft'/'peft') in the recipe name."
 )
+
+DATASET_TYPES = [
+    "llm-pretrain",
+    "llm-pretrain-mock",
+]
+
+
+def _resolve_seq_length(config: ConfigContainer, seq_length: int | None) -> int:
+    if seq_length is not None:
+        return seq_length
+    if hasattr(config, "model") and config.model is not None and hasattr(config.model, "seq_length"):
+        return config.model.seq_length
+    return 4096
+
+
+def apply_dataset_override(
+    config: ConfigContainer,
+    dataset_type: str,
+    packed_sequence: bool = False,
+    seq_length: int | None = None,
+    cli_overrides: list[str] | None = None,
+) -> ConfigContainer:
+    """Apply the pretrain dataset choices needed by the local GPT smoke path.
+
+    The full Bridge helper imports optional VLM and PEFT modules. Keeping this
+    script pretrain-only lets the orchestration repo run a minimal GPT smoke
+    without transformer-engine or multimodal dependencies.
+    """
+    del packed_sequence, cli_overrides
+    resolved_seq_length = _resolve_seq_length(config, seq_length)
+
+    if dataset_type == "llm-pretrain":
+        config.dataset = GPTDatasetConfig(
+            seq_length=resolved_seq_length,
+            random_seed=1234,
+            reset_attention_mask=False,
+            reset_position_ids=False,
+            eod_mask_loss=False,
+            num_dataset_builder_threads=1,
+            blend=None,
+            blend_per_split=None,
+            split="9999,8,2",
+            data_sharding=True,
+            dataloader_type="single",
+            skip_getting_attention_mask_from_dataset=True,
+        )
+    elif dataset_type == "llm-pretrain-mock":
+        config.dataset = MockGPTDatasetConfig(
+            seq_length=resolved_seq_length,
+            random_seed=1234,
+            reset_attention_mask=False,
+            reset_position_ids=False,
+            eod_mask_loss=False,
+            num_dataset_builder_threads=1,
+            split="9999,8,2",
+            data_sharding=True,
+            dataloader_type="single",
+            skip_getting_attention_mask_from_dataset=True,
+        )
+    else:
+        raise ValueError(f"Unsupported dataset type for this runner: {dataset_type}")
+
+    if seq_length is not None and hasattr(config, "model") and config.model is not None:
+        config.model.seq_length = seq_length
+    return config
+
+
+def infer_mode_from_dataset(dataset_type: str) -> str:
+    if dataset_type.startswith("llm-pretrain"):
+        return "pretrain"
+    raise ValueError(f"Unsupported dataset type for this runner: {dataset_type}")
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:

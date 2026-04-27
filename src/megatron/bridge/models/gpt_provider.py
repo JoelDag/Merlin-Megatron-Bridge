@@ -117,6 +117,11 @@ def modelopt_transformer_layer_spec(config: "GPTModelProvider") -> ModuleSpec:
 
 def default_layer_spec(config: "GPTModelProvider") -> ModuleSpec:
     """Determine the most appropriate layer specification based on availability."""
+    try:
+        import transformer_engine.pytorch  # noqa: F401
+    except ImportError:
+        return local_layer_spec(config)
+
     if config.use_transformer_engine_full_layer_spec:
         return transformer_engine_full_layer_spec(config)
     else:

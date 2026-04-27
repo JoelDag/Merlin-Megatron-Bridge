@@ -183,11 +183,10 @@ def build_train_valid_test_data_loaders(
     Returns:
         A tuple (train_dataloader, valid_dataloader, test_dataloader).
     """
-    # Check for MegatronMIMO path
-    from megatron.bridge.data.megatron_mimo.base_provider import MegatronMIMODatasetProvider
-    from megatron.bridge.models.megatron_mimo.megatron_mimo_provider import MegatronMIMOProvider
+    # Avoid importing the MegatronMIMO/HF conversion stack for plain GPT pretraining.
+    if cfg.model.__class__.__name__ == "MegatronMIMOProvider":
+        from megatron.bridge.data.megatron_mimo.base_provider import MegatronMIMODatasetProvider
 
-    if isinstance(cfg.model, MegatronMIMOProvider):
         if not isinstance(cfg.dataset, MegatronMIMODatasetProvider):
             raise ValueError(
                 "MegatronMIMO models require cfg.dataset to be a MegatronMIMODatasetProvider. "
