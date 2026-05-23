@@ -47,6 +47,7 @@ METRIC_NAMES = (
 _COUNTS: dict[int, torch.Tensor] = {}
 _INSTALLED = False
 _ORIGINAL_APPLY_ROUTER_TOKEN_DROPPING = None
+_CURRENT_LAYER_STACK: list[int] = []
 
 
 def _env_enabled() -> bool:
@@ -59,6 +60,8 @@ def _env_enabled() -> bool:
 
 
 def _router_layer_index() -> int | None:
+    if _CURRENT_LAYER_STACK:
+        return _CURRENT_LAYER_STACK[-1]
     frame = inspect.currentframe()
     try:
         caller = frame.f_back.f_back if frame is not None and frame.f_back is not None else None
@@ -149,6 +152,29 @@ def install_moe_token_drop_metric_hooks(enabled: bool | None = None) -> bool:
     wrapped_apply_router_token_dropping._bridge_moe_token_drop_metrics_hook = True
     router_mod.apply_router_token_dropping = wrapped_apply_router_token_dropping
     _ORIGINAL_APPLY_ROUTER_TOKEN_DROPPING = original
+
+    original_routing = router_mod.TopKRouter.routing
+    if not getattr(original_routing, "_bridge_moe_token_drop_metrics_context_hook", False):
+
+        def wrapped_topk_routing(self: Any, *args: Any, **kwargs: Any):
+            layer_number = getattr(self, "layer_number", None)
+            layer_index = None
+            if layer_number is not None:
+                config = getattr(self, "config", None)
+                if getattr(self, "is_mtp_layer", False) and config is not None:
+                    layer_number += int(getattr(config, "num_layers", 0) or 0)
+                layer_index = max(0, int(layer_number) - 1)
+            if layer_index is None:
+                return original_routing(self, *args, **kwargs)
+            _CURRENT_LAYER_STACK.append(layer_index)
+            try:
+                return original_routing(self, *args, **kwargs)
+            finally:
+                _CURRENT_LAYER_STACK.pop()
+
+        wrapped_topk_routing._bridge_moe_token_drop_metrics_context_hook = True
+        router_mod.TopKRouter.routing = wrapped_topk_routing
+
     _INSTALLED = True
     print_rank_0("Enabled Bridge MoE token-drop metrics hook.")
     return True
@@ -209,6 +235,20 @@ def flush_moe_token_drop_metrics(
 
     for name, value in metrics.items():
         _log_scalar(f"moe_token_drop/{name}", value, iteration, writer, wandb_writer)
+
+    print_rank_0(
+        "[moe_token_drop] "
+        f"iteration {iteration} | "
+        f"routed_assignments: {metrics['routed_assignments']:.0f} | "
+        f"kept_assignments: {metrics['kept_assignments']:.0f} | "
+        f"dropped_assignments: {metrics['dropped_assignments']:.0f} | "
+        f"dropped_assignment_rate: {metrics['dropped_assignment_rate']:.6f} | "
+        f"tokens_with_zero_kept_experts: {metrics['tokens_with_zero_kept_experts']:.0f} | "
+        f"tokens_with_1_kept_experts: {metrics['tokens_with_1_kept_experts']:.0f} | "
+        f"tokens_with_2_kept_experts: {metrics['tokens_with_2_kept_experts']:.0f} | "
+        f"tokens_with_3_kept_experts: {metrics['tokens_with_3_kept_experts']:.0f} | "
+        f"tokens_with_4_kept_experts: {metrics['tokens_with_4_kept_experts']:.0f}"
+    )
 
     if not per_layer_logging:
         return
