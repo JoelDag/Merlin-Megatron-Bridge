@@ -36,6 +36,7 @@ from megatron.bridge.training.forward_step_func_types import ForwardStepCallable
 from megatron.bridge.training.state import GlobalState, TrainState
 from megatron.bridge.training.utils.flop_utils import num_floating_point_operations
 from megatron.bridge.training.utils.mlflow_utils import _sanitize_mlflow_metrics
+from megatron.bridge.training.utils.moe_token_drop_metrics import flush_moe_token_drop_metrics
 from megatron.bridge.training.utils.pg_utils import get_pg_collection
 from megatron.bridge.training.utils.theoretical_memory_utils import report_theoretical_memory
 from megatron.bridge.utils.common_utils import get_rank_safe, get_world_size_safe, print_rank_0, print_rank_last
@@ -771,6 +772,12 @@ def training_log(
             moe_layer_freq=getattr(config.model, "moe_layer_freq", None),
             mtp_num_layers=getattr(config.model, "mtp_num_layers", None),
             pg_collection=pg_collection,
+        )
+        flush_moe_token_drop_metrics(
+            iteration=iteration,
+            writer=writer,
+            wandb_writer=wandb_writer,
+            per_layer_logging=True,
         )
     if getattr(config.model, "mtp_num_layers", None) is not None:
         mtp_loss_scale = 1 / get_num_microbatches()
