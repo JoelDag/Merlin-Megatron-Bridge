@@ -320,7 +320,7 @@ def slice_batch_for_context_parallel(
         Tuple of (inputs_embeds, labels, loss_mask, position_ids, attention_mask)
         with all tensors sliced for this CP rank. inputs_embeds remains in (T, B, D) format.
     """
-    from megatron.core.utils import get_batch_on_this_cp_rank
+    from megatron.bridge.training.utils.context_parallel import get_batch_on_this_cp_rank_compat
 
     cp_size = pg_collection.cp.size()
     if cp_size <= 1:
@@ -361,7 +361,7 @@ def slice_batch_for_context_parallel(
     else:
         # For BSHD format, use standard zigzag slicing
         cp_group = pg_collection.cp
-        cp_batch = get_batch_on_this_cp_rank(
+        cp_batch = get_batch_on_this_cp_rank_compat(
             {
                 "decoder_input": inputs_embeds,
                 "labels": labels,

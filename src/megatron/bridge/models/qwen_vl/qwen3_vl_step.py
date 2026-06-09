@@ -20,13 +20,14 @@ import torch
 from megatron.core.models.gpt import GPTModel
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.pipeline_parallel.utils import is_pp_first_stage, is_pp_last_stage
-from megatron.core.utils import get_batch_on_this_cp_rank, get_model_config
+from megatron.core.utils import get_model_config
 
 from megatron.bridge.training.config import ConfigContainer
 from megatron.bridge.training.losses import (
     create_masked_next_token_loss_function as _create_loss_function,
 )
 from megatron.bridge.training.state import GlobalState
+from megatron.bridge.training.utils.context_parallel import get_batch_on_this_cp_rank_compat
 from megatron.bridge.training.utils.padding_utils import (
     pad_or_truncate_2d_to_len,
     pad_or_truncate_attn_to_len,
@@ -270,7 +271,7 @@ def forward_step(
     }
 
     original_tokens = tokens.clone()
-    forward_args = get_batch_on_this_cp_rank(forward_args, cp_group=this_pg_collection.cp)
+    forward_args = get_batch_on_this_cp_rank_compat(forward_args, cp_group=this_pg_collection.cp)
     forward_args["packed_seq_params"] = None
     forward_args["input_ids"] = original_tokens
     # calculate position_ids in model forward
