@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Optional MoE token-dropping counters for capacity-factor validation.
+"""Optional MoE routing and token-dropping counters.
 
 The hook is intentionally opt-in because it adds small GPU reductions on the
-router path. Enable it with ``BRIDGE_MOE_TOKEN_DROP_METRICS=1`` for validation
-runs where the quality impact of low MoE capacity factors needs to be measured.
+router path. Enable it with ``BRIDGE_MOE_TOKEN_DROP_METRICS=1`` when routing
+health must be measured. Capacity-limited routing records the map before and
+after token dropping; dropless routing records the returned map as both routed
+and kept so an exact zero-drop observation is still emitted.
 """
 
 from __future__ import annotations
@@ -168,7 +170,30 @@ def install_moe_token_drop_metric_hooks(enabled: bool | None = None) -> bool:
                 return original_routing(self, *args, **kwargs)
             _CURRENT_LAYER_STACK.append(layer_index)
             try:
-                return original_routing(self, *args, **kwargs)
+                result = original_routing(self, *args, **kwargs)
+                # Megatron-Core calls apply_router_token_dropping only when a
+                # capacity factor is configured. In the dropless path the
+                # returned routing map is therefore simultaneously the routed
+                # and kept map. Record it here so zero-drop evidence exists,
+                # while leaving capacity-limited accounting solely to the
+                # apply_router_token_dropping wrapper above to avoid counting
+                # the same forward twice.
+                try:
+                    config = getattr(self, "config", None)
+                    if (
+                        getattr(config, "moe_expert_capacity_factor", None) is None
+                        and isinstance(result, tuple)
+                        and len(result) == 2
+                        and isinstance(result[1], torch.Tensor)
+                    ):
+                        _record_counts(
+                            routing_map=result[1],
+                            final_map=result[1],
+                            layer_index=layer_index,
+                        )
+                except Exception as exc:  # Keep metric collection from breaking training.
+                    logger.debug("Dropless MoE token-drop metric collection failed: %s", exc)
+                return result
             finally:
                 _CURRENT_LAYER_STACK.pop()
 
@@ -256,9 +281,7 @@ def flush_moe_token_drop_metrics(
     for layer_index, row in enumerate(matrix):
         layer_metrics = {name: float(row[i].item()) for i, name in enumerate(METRIC_NAMES)}
         layer_routed = max(layer_metrics["routed_assignments"], 1.0)
-        layer_metrics["dropped_assignment_rate"] = (
-            layer_metrics["dropped_assignments"] / layer_routed
-        )
+        layer_metrics["dropped_assignment_rate"] = layer_metrics["dropped_assignments"] / layer_routed
         for name, value in layer_metrics.items():
             _log_scalar(
                 f"moe_token_drop/layer_{layer_index}/{name}",

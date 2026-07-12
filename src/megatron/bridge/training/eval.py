@@ -51,6 +51,27 @@ except ImportError:
     HAS_PAGED_STASHING = False
 
 
+def _loss_accumulator_dtype(*, return_loss_sufficient_statistics: bool) -> torch.dtype:
+    """Choose the evaluation accumulator precision for the requested output."""
+
+    return torch.double if return_loss_sufficient_statistics else torch.float
+
+
+def _finalize_loss_dict(
+    total_loss_dict: dict[str, torch.Tensor],
+    *,
+    return_loss_sufficient_statistics: bool,
+) -> dict[str, torch.Tensor]:
+    """Preserve sufficient statistics or apply the legacy averaging behavior."""
+
+    if return_loss_sufficient_statistics:
+        return total_loss_dict
+    for key, value in total_loss_dict.items():
+        numerator, denominator = value
+        total_loss_dict[key] = numerator / denominator
+    return total_loss_dict
+
+
 def evaluate(
     state: GlobalState,
     forward_step_func: ForwardStepCallable,
@@ -64,6 +85,8 @@ def evaluate(
     pg_collection: Optional[Union[ProcessGroupCollection, "MultiModuleProcessGroupCollection"]] = None,
     callback_manager: CallbackManager | None = None,
     is_test: bool = False,
+    *,
+    return_loss_sufficient_statistics: bool = False,
 ) -> tuple[Optional[dict[str, torch.Tensor]], Optional[Any], bool]:
     """Evaluation function.
 
@@ -85,10 +108,16 @@ def evaluate(
         callback_manager (Optional[CallbackManager]): Optional callback manager for firing callbacks.
         is_test (bool, optional): Whether this is test evaluation (vs validation). Defaults to False.
             Controls which callback events are fired (on_test_* vs on_eval_*).
+        return_loss_sufficient_statistics (bool, optional): Return each reporting
+            metric as ``[numerator, denominator]`` instead of its average.  This
+            is intended for exact downstream aggregation (for example,
+            per-language validation) and leaves the default API unchanged.
 
     Returns:
         tuple[Optional[dict[str, torch.Tensor]], Optional[Any], bool]: A tuple containing:
-            - total_loss_dict: Dictionary of averaged losses.
+            - total_loss_dict: Dictionary of averaged losses, or
+              ``[numerator, denominator]`` tensors when
+              ``return_loss_sufficient_statistics=True``.
             - collected_non_loss_data: Data collected by non_loss_data_func.
             - timelimit_hit: Boolean indicating if the time limit was reached.
     """
@@ -282,8 +311,11 @@ def evaluate(
 
                 for key in loss_dicts[0].keys():
                     if key not in total_loss_dict:
-                        total_loss_dict[key] = torch.tensor([0.0, 0.0], dtype=torch.float).cuda()
-                    val = [x[key].view(-1) for x in loss_dicts]
+                        accumulator_dtype = _loss_accumulator_dtype(
+                            return_loss_sufficient_statistics=return_loss_sufficient_statistics
+                        )
+                        total_loss_dict[key] = torch.tensor([0.0, 0.0], dtype=accumulator_dtype).cuda()
+                    val = [x[key].view(-1).to(dtype=total_loss_dict[key].dtype) for x in loss_dicts]
 
                     if val[0].numel() == 2:
                         val = torch.vstack(val).sum(dim=0)
@@ -353,9 +385,10 @@ def evaluate(
     for model_module in model:
         model_module.train()
 
-    for key in total_loss_dict:
-        numerator, denominator = total_loss_dict[key]
-        total_loss_dict[key] = numerator / denominator
+    _finalize_loss_dict(
+        total_loss_dict,
+        return_loss_sufficient_statistics=return_loss_sufficient_statistics,
+    )
 
     timers("evaluate").stop()
     timers.log(["evaluate"])
